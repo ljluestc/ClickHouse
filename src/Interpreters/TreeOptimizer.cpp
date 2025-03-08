@@ -640,6 +640,70 @@ void TreeOptimizer::optimizeGroupByFunctionKeys(ASTSelectQuery * select_query)
     group_by->children = modified;
 }
 
+
+void TreeOptimizer::optimizeLeftJoinToInner(ASTPtr & query, const ContextPtr & context)
+{
+    auto * select_query = query->as<ASTSelectQuery>();
+    if (!select_query || !select_query->tables())
+        return;
+
+    ASTs & tables = select_query->tables()->children;
+    if (tables.empty())
+        return;
+
+    // First table is the left table
+    auto * left_table_element = tables[0]->as<ASTTablesInSelectQueryElement>();
+    if (!left_table_element || !left_table_element->table_expression)
+        return;
+
+    auto * left_table_expr = left_table_element->table_expression->as<ASTTableExpression>();
+    if (!left_table_expr || !left_table_expr->database_and_table_name)
+        return;
+
+    String left_db = left_table_expr->database ? left_table_expr->database->as<ASTIdentifier>()->name() : context->getCurrentDatabase();
+    String left_table_name = left_table_expr->database_and_table_name->as<ASTIdentifier>()->name();
+    StoragePtr left_storage = DatabaseCatalog::instance().getTable({left_db, left_table_name}, context);
+
+    // Check subsequent tables for joins
+    for (size_t i = 1; i < tables.size(); ++i)
+    {
+        auto * table_element = tables[i]->as<ASTTablesInSelectQueryElement>();
+        if (!table_element || !table_element->table_join || !table_element->table_expression)
+            continue;
+
+        auto * table_join = table_element->table_join->as<ASTTableJoin>();
+        if (!table_join || table_join->kind != JoinKind::Left)
+            continue;
+
+        // Check ON clause
+        if (!table_join->on_expression)
+            continue;
+
+        auto * on_expr = table_join->on_expression->as<ASTFunction>();
+        if (!on_expr || on_expr->name != "equals" || on_expr->arguments->children.size() != 2)
+            continue;
+
+        auto * left_key = on_expr->arguments->children[0]->as<ASTIdentifier>();
+        auto * right_key = on_expr->arguments->children[1]->as<ASTIdentifier>();
+        if (!left_key || !right_key)
+            continue;
+
+        String left_key_name = left_key->name();
+        // Handle qualified names (e.g., "t1.id" -> "id")
+        if (left_key_name.find('.') != String::npos)
+            left_key_name = left_key_name.substr(left_key_name.find('.') + 1);
+
+        // Verify left key is NOT NULL
+        auto metadata = left_storage->getInMemoryMetadataPtr();
+        auto column_desc = metadata->getColumns().getPhysical(left_key_name);
+        if (!column_desc.type->isNullable())
+        {
+            table_join->kind = JoinKind::Inner;
+            LOG_DEBUG(&Poco::Logger::get("TreeOptimizer"), "Rewrote LEFT JOIN to INNER JOIN for table {} on key {}", left_table_name, left_key_name);
+        }
+    }
+}
+
 void TreeOptimizer::apply(ASTPtr & query, TreeRewriterResult & result,
                           const std::vector<TableWithColumnNamesAndTypes> & tables_with_columns, ContextPtr context)
 {
@@ -648,6 +712,10 @@ void TreeOptimizer::apply(ASTPtr & query, TreeRewriterResult & result,
     auto * select_query = query->as<ASTSelectQuery>();
     if (!select_query)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Select analyze for not select asts.");
+
+    // Rewrite LEFT JOIN to INNER JOIN if possible
+    if (settings[Setting::optimize_rewrite_left_to_inner_join])
+        optimizeLeftJoinToInner(query, context);
 
     /// Move arithmetic operations out of aggregation functions
     if (settings[Setting::optimize_arithmetic_operations_in_aggregate_functions])

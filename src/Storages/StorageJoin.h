@@ -37,6 +37,10 @@ public:
         const ConstraintsDescription & constraints_,
         const String & comment,
         bool overwrite,
+        JoinKind kind_,
+        JoinStrictness strictness_,
+        const Names & key_names_,
+        const String & asof_column_,
         bool persistent_);
 
     String getName() const override { return "Join"; }

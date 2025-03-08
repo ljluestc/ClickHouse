@@ -157,7 +157,7 @@ struct Settings
     static bool hasBuiltin(std::string_view name);
     static std::string_view resolveName(std::string_view name);
     static void checkNoSettingNamesAtTopLevel(const Poco::Util::AbstractConfiguration & config, const String & config_path);
-
+    extern const SettingsBool optimize_rewrite_left_to_inner_join;
 private:
     std::unique_ptr<SettingsImpl> impl;
 };
