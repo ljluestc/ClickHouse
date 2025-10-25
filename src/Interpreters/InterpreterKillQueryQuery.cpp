@@ -452,8 +452,14 @@ AccessRightsElements InterpreterKillQueryQuery::getRequiredAccessForDDLOnCluster
 {
     const auto & query = query_ptr->as<ASTKillQueryQuery &>();
     AccessRightsElements required_access;
+    /// Allow initiating KILL QUERY ON CLUSTER even for readonly users.
+    /// The actual permission checks will happen on each shard the same way as for local KILL QUERY,
+    /// which already permits cancelling own queries without the KILL_QUERY privilege.
     if (query.type == ASTKillQueryQuery::Type::Query)
-        required_access.emplace_back(AccessType::KILL_QUERY);
+    {
+        /// Intentionally do not require AccessType::KILL_QUERY here to avoid failing with READONLY
+        /// at the initiator when the user has a readonly profile.
+    }
     else if (query.type == ASTKillQueryQuery::Type::Mutation)
         required_access.emplace_back(
                 AccessType::ALTER_UPDATE
